@@ -1,54 +1,100 @@
 package main
 
 import (
+    "database/sql"
     "flag"
+    "html/template"
     "log"
     "net/http"
     "os"
+
+    // Import the models package. You need to prefix this with
+    // Whatever module path you set up. Example:
+    // "{your-module_path}/internal/models". You can find it in the go.mod file.
+    "snippetbox.felipeacosta.net/internal/models"
+
+    _"github.com/go-sql-driver/mysql"
 )
 
-//Define an application struct to hold the application-wide dependencies for the
+// Define an application struct to hold the application-wide dependencies for the
 // web application. For now we'll only include fields for the two custom loggers, but
 // we'll add more to it as the build progresses.
+
+// Add a snippet field to the application struct. This will allow us to
+// make the SnippetModel object available to our handlers.
+// Add a templateCache field to the application struct.
 type application struct {
     errorLog *log.Logger
     infoLog *log.Logger
+    snippets *models.SnippetModel
+    templateCache map[string]*template.Template
 }
 
 
 func main() {
     addr := flag.String("addr", ":4000", "HTTP network address")
+    // Define a new comand-line flag for the MySQL DSN string. When git pushing it change password to web:pass@/
+    dsn := flag.String("dsn", "web:Allapattah123456!@/snippetbox?parseTime=true", "MySQL data source name")
 
     flag.Parse()
 
     infoLog := log.New(os.Stdout, "INFO\t", log.Ldate|log.Ltime)
     errorLog := log.New(os.Stderr, "ERROR\t", log.Ldate|log.Ltime|log.Lshortfile)
+
+    // To keep the main() function tidy I've put the code for creating a connection
+    // pool into the seperate openDB() function below. We pass openDB() the DSN
+    // from the command-line flag.
+    db, err := openDB(*dsn)
+    if err != nil {
+        errorLog.Fatal(err)
+    }
+
+    // We also defer a call to db.Close, so that the connection pool is closed 
+    // before the main() function exits.
+    defer db.Close()
+
+    // Initialize a new tamplet cache...
+    // And add it to teh application dependencies below
+    templateCache, err := newTemplateCache() 
+    if err != nil {
+        errorLog.Fatal(err)
+    }
     
-    //Initialize a new instance of our application struct, containing the 
-    //dependencies.
+    // Initialize a new instance of our application struct, containing the 
+    // dependencies.
+    // Initialize a models.SnippetModel instance and add it to the application dependencies.
     app := &application{
         errorLog: errorLog,
         infoLog: infoLog,
+        snippets: &models.SnippetModel{DB: db},
+        templateCache: templateCache,
     }
-
-    // Swap the route declaration to use the application struct's methods as the
-    // handler functions.
-    mux := http.NewServeMux()
-
-    fileServer := http.FileServer(http.Dir("./ui/static/"))
-    mux.Handle("/static/", http.StripPrefix("/static", fileServer))
-
-    mux.HandleFunc("/", app.home)
-    mux.HandleFunc("/snippet/view", app.snippetView)
-    mux.HandleFunc("snippet/create", app.snippetCreate)
 
     srv := &http.Server{
         Addr: *addr,
         ErrorLog: errorLog,
-        Handler: mux,
+        // Call the new app.routes() method to get the servemux containing our routes.
+        Handler: app.routes(),
     }
 
     infoLog.Printf("Starting serve on %s", *addr)
-    err := srv.ListenAndServe()
+    // Because the err variable is now already declared in the code above, we need
+    // to use the assignment operator = here, instead of the := `declare and assign` operator.
+    err = srv.ListenAndServe()
     errorLog.Fatal(err)
 }
+
+
+// The openDB() function wraps sql.Open() and returns a sql.DB connection pool for a given DSN.
+func openDB(dsn string) (*sql.DB, error) {
+    db, err := sql.Open("mysql", dsn)
+    if err != nil {
+        return nil, err
+    }
+    if err = db.Ping(); err != nil {
+        return nil, err
+    }
+    return db, nil
+}
+
+
