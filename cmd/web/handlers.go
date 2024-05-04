@@ -5,15 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
-	"unicode/utf8"
 
 	"snippetbox.felipeacosta.net/internal/models"
-
+	"snippetbox.felipeacosta.net/internal/validator"
 
 	"github.com/julienschmidt/httprouter"
 )
-
 
 func (app *application) home(w http.ResponseWriter, r *http.Request) {
 	snippets, err := app.snippets.Latest()
@@ -21,15 +18,15 @@ func (app *application) home(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, err)
 		return
 	}
-    
-    data := app.newTemplateData(r)
-    data.Snippets = snippets
 
-    app.render(w, http.StatusOK, "home.tmpl.html", data)
+	data := app.newTemplateData(r)
+	data.Snippets = snippets
+
+	app.render(w, http.StatusOK, "home.tmpl.html", data)
 }
 
 func (app *application) snippetView(w http.ResponseWriter, r *http.Request) {
-	// When httprouter is parsing a request, the values of any named parameters will be stored in the request context. 
+	// When httprouter is parsing a request, the values of any named parameters will be stored in the request context.
 	// You can use the ParamsFromContext() function to retireve a slice containing these parameter names and values like so:
 	params := httprouter.ParamsFromContext(r.Context())
 
@@ -37,7 +34,7 @@ func (app *application) snippetView(w http.ResponseWriter, r *http.Request) {
 	// parameter form the slice and validate it as normal.
 	id, err := strconv.Atoi(params.ByName("id"))
 	if err != nil || id < 1 {
-		app.notFound(w) 
+		app.notFound(w)
 		return
 	}
 
@@ -51,74 +48,135 @@ func (app *application) snippetView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-    data := app.newTemplateData(r)
-    data.Snippet = snippet
+	// Use the PopString() method to retieve the value for the "flash" key. Popstring() also deletes the key and value from the session data, so it acts like one-time fetch. If there is no matching key in the session data this will return the empty string.
+	// flash := app.sessionManager.PopString(r.Context(), "flash")	// Adding in helpers.go newTemplateData func ... Flash: app.session... means we no longer need to check for the flash message within here.
 
-    app.render(w, http.StatusOK, "view.tmpl.html", data)
+	data := app.newTemplateData(r)
+	data.Snippet = snippet
+
+	// Pass the flash message to the template.
+	// data.Flash = flash
+
+	app.render(w, http.StatusOK, "view.tmpl.html", data)
 }
 
 // Add a new snippetCreate handler, which for now returns a placeholder response, We'll update this.
-func (app *application) snippetCreate( w http.ResponseWriter, r *http.Request) {
+func (app *application) snippetCreate(w http.ResponseWriter, r *http.Request) {
 	data := app.newTemplateData(r)
+
+	// Initialize a new createSnippetForm instance and pass it to the template.
+	// Notice how this is also a great oppertunity to set any default or 'initial'
+	// values for the form --- here we set the initial value for the snippet expiry to 365 days.
+	data.Form = snippetCreateForm{
+		Expires: 365,
+	}
 
 	app.render(w, http.StatusOK, "create.tmpl.html", data)
 }
 
+// Define a snippetCreateForm struct to represent the form data and validation errors for the form fields. Note that all the struct fields are deliberately exported (i.e start with a capital letter). This is because struct fields must be exported in order to be read by the html/template package when rendering the template.
+// Remove the explicit FieldErrors struct field and instead embed the Validator type. Embedding this means that our snipptCreateForm "inherits" all the fields and methods of our Validator type (including the FieldErros field).
+// Update our snippetCreateForm struct to include struct tags which tell the decoder how to map HTML form values into the different struct fields. SO, for example, here we're telling the decoder to store the value from the HTML form input with the name "title" in the Title field. The struct tag `form:"-"` tells the decoder to completely ignore a field during decoding.
+type snippetCreateForm struct {
+	Title   string `form:"title"`
+	Content string `form:"content"`
+	Expires int    `form:"expires"`
+	// FieldErrors map[string]string
+	validator.Validator `form:"-"` // completely ignore this field during decoding.
+}
+
 func (app *application) snippetCreatePost(w http.ResponseWriter, r *http.Request) {
-	// First we call r.ParseForm() which adds any data in POST request bodies to the r.PostForm map. This also works in the same way for PUT and PATCH request.
-	// If there are any errors, we use our app.ClientError() helper to send a 400 Bad Request response to the user.
-	err := r.ParseForm()
+	// Declare a new empty instance of the snippetCreateForm struct
+	var form snippetCreateForm
+
+	// Call the Decode() method of the form decoder, passing in the current request and *a pinter* to our snippetCreateForm struct. This will essentially fill our struct with the relevant values from the HTML form. If there is a problme, we return a 400 Bad Request response client.
+	err := app.decodePostForm(r, &form)
 	if err != nil {
 		app.clientError(w, http.StatusBadRequest)
 		return
 	}
 
-	// Use the r.PostForm.Get() method to retrieve the title and content from the r.PostForm map.
-	title := r.PostForm.Get("title")
-	content := r.PostForm.Get("content")
+	// Because the Validator type is embedded by the snippetCreateFrom struct, we can call checkField() directly on it to execute our validation checks. CheckField() will add the provided keys and errors message to the FieldErrors map if the check does no evaluate to true. For example, in the first line here we "check that the form.Title field is not blank". In the second, we "check that the form.Title field has a max character length of 100 and so on.
+	form.CheckField(validator.NotBlank(form.Title), "title", "This field cannot be blank")
+	form.CheckField(validator.MaxChars(form.Title, 100), "title", "This field cannot be more than 100 characters long")
+	form.CheckField(validator.NotBlank(form.Content), "content", "This field cannot be blank")
+	form.CheckField(validator.PermittedInt(form.Expires, 1, 7, 365), "expires", "This filed must be equal to 1, 7, or 365")
 
-	// The r.PostForm.Get() method always returns the form data as a *string. However, we're expecting our expires value to be a number, and want to represent it in our Go code as an integer. 
-	// So we need to manually convert the form data to an integer using strconv.Atoi(), and we send a 400 Bad Request response if the conversion fails.
-	expires, err := strconv.Atoi(r.PostForm.Get("expires"))
-	if err != nil {
-		app.clientError(w, http.StatusBadRequest)
-		return 
-	}
-
-	// Initialize a map to hold any validation errors for the form fileds.
-	fieldErrors := make(map[string]string)
-
-	// Check that the title value is not blank and is not more than 100
-	// characters long. If it fails either of those checks, add a message to the 
-	// errors map using the field names as the key.
-	if strings.TrimSpace(title) == "" {
-		fieldErrors["title"] = "This field cannot be blank"
-	} else if utf8.RuneCountInString(title) > 100 {
-		fieldErrors["title"] = "This field cannot be more than 100 characters long"
-	}
-
-	// Check that the Content value isn't blank.
-	if strings.TrimSpace(content) == "" {
-		fieldErrors["content"] = "THis field cannot be blank"
-	}
-
-	// Check the expires value matches one of the permitted values (1, 7 or 365).
-	if expires != 1 && expires != 7 && expires != 365 {
-		fieldErrors["expires"] = "This field must equal 1, 7, or 365"
-	}
-
-	// If there are any errors, dump them in a plain text HTTP response and return from the handler.
-	if len(fieldErrors) > 0 {
-		fmt.Fprint(w, fieldErrors)
+	// Use the Valid() method to see if any of the checks failed. If the did, then re-render the template passing in the form in the same way as before.
+	if !form.Valid() {
+		data := app.newTemplateData(r)
+		data.Form = form
+		app.render(w, http.StatusUnprocessableEntity, "create.tmpl.html", data)
 		return
 	}
 
-	id, err := app.snippets.Insert(title, content, expires)
+	// We also nee to update this line to pass the data from the
+	// snippetCreateForm instance to our Insert() method.
+	id, err := app.snippets.Insert(form.Title, form.Content, form.Expires)
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
-	
+
+	// Use the Put() method to add a string value ("Snippet successfully created!") and the corresponding key ("flash") to the session data.
+	// r.Context() (request context) is somewhere that the session manager temporarily stores info while your handlers are dealing with the request.
+	// "flash" is the key for the specific message that we are adding to the session data. We'll subsequently retireve the message from the session data using this key too.
+	app.sessionManager.Put(r.Context(), "flash", "Snippet successfully created!")
+
 	// Update the redirect path to use the clean new URL format.
 	http.Redirect(w, r, fmt.Sprintf("/snippet/view/%d", id), http.StatusSeeOther)
+}
+
+// Create a new userSignupForm struct
+type userSignupForm struct {
+	Name                string `form:"name"`
+	Email               string `form:"email"`
+	Password            string `form:"password"`
+	validator.Validator `form:"-"`
+}
+
+// Update the handler so it displays the signup page.
+func (app *application) userSignup(w http.ResponseWriter, r *http.Request) {
+	data := app.newTemplateData(r)
+	data.Form = userSignupForm{}
+	app.render(w, http.StatusOK, "signup.tmpl.html", data)
+}
+
+func (app *application) userSignupPost(w http.ResponseWriter, r *http.Request) {
+	// Declare an zero-valued instance of our userSingupForm struct
+	var form userSignupForm
+
+	// Parse the form data into the userSignupForm struct.
+	err := app.decodePostForm(r, &form)
+	if err != nil {
+		app.clientError(w, http.StatusBadRequest)
+		return
+	}
+
+	// Validate the form content using our helper functions.
+	form.CheckField(validator.NotBlank(form.Name), "name", "This field cannot be blank")
+	form.CheckField(validator.NotBlank(form.Email), "email", "This field cannot be blank")
+	form.CheckField(validator.Matches(form.Email, validator.EmailRX), "email", "This field must be a valid email address")
+	form.CheckField(validator.NotBlank(form.Password), "password", "This field cannot be blank")
+	form.CheckField(validator.MinChars(form.Password, 8), "password", "This field must be at least 8 characters long")
+
+	// If there are any errors, redisplay the signup form along with a 422 status code.
+	if !form.Valid() {
+		data := app.newTemplateData(r)
+		data.Form = form
+		app.render(w, http.StatusUnprocessableEntity, "signup.tmpl.html", data)
+		return
+	}
+}
+
+func (app *application) userLogin(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintln(w, "Display a HTML form for logging in a user...")
+}
+
+func (app *application) userLoginPost(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintln(w, "Authenticate and login the user...")
+}
+
+func (app *application) userLogoutPost(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintln(w, "Logout the user...")
 }
