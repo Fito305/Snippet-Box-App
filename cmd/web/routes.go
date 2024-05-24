@@ -2,6 +2,8 @@ package main
 
 import (
 	"net/http"
+
+	"snippetbox.felipeacosta.net/ui"
 	
 	"github.com/julienschmidt/httprouter"
 	"github.com/justinas/alice"
@@ -22,9 +24,14 @@ func (app *application) routes() http.Handler {
 		app.notFound(w)
 	})
 
-	// Update the pattern for the route for the static files.
-    fileServer := http.FileServer(http.Dir("./ui/static/"))
-    router.Handler(http.MethodGet, "/static/*filepath", http.StripPrefix("/static", fileServer))
+	// Take the ui.Files embedded filesystem and conver it to a https.FS type so that it satisfies the http.FileSystem interface. We then pass that to the http.FileServer() function to create the file server handler.
+    fileServer := http.FileServer(http.FS(ui.Files))
+
+	// Our static files are contained in the "static" folder of the ui.Files embedded filesystem. So, for example, our CSS stylesheet is located at "static/css/main.css". This means that we no longer need to strip the prefix from the request URL---any requests that start with /static/ can just be passed directly to the file server and the corresponding static file will be served (so long as it exists).
+    router.Handler(http.MethodGet, "/static/*filepath", fileServer)
+
+	// Add a new GET /ping route.
+	router.HandlerFunc(http.MethodGet, "/ping", ping)
 	
 	// Create a new midleware chian containing the middleware specific to our dynamic application routes. 
 	// For now, this chain will only contain the LoadAndSave session middleware but we'll add more to it.

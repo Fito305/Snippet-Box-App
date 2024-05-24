@@ -34,8 +34,8 @@ import (
 type application struct {
 	errorLog       *log.Logger
 	infoLog        *log.Logger
-	snippets       *models.SnippetModel
-	users          *models.UserModel
+	snippets       models.SnippetModelInterface
+	users          models.UserModelInterface
 	templateCache  map[string]*template.Template
 	formDecoder    *form.Decoder
 	sessionManager *scs.SessionManager
@@ -44,7 +44,7 @@ type application struct {
 func main() {
 	addr := flag.String("addr", ":4000", "HTTP network address")
 	// Define a new comand-line flag for the MySQL DSN string. When git pushing it change password to web:pass@/
-	dsn := flag.String("dsn", "web:Allapattah123456!@/snippetbox?parseTime=true", "MySQL data source name")
+	dsn := flag.String("dsn", "username:password@/snippetbox?parseTime=true", "MySQL data source name")
 
 	flag.Parse()
 
